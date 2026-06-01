@@ -21,12 +21,8 @@ export function AuthImage({
         const token = sessionData?.session?.access_token;
         if (!token) return;
 
-        const headers: Record<string, string> = {
-          "Authorization": `Bearer ${token}`
-        };
-
-        const res = await fetch(`/api/drive-file/${encodeURIComponent(fileId)}`, {
-          headers,
+        const res = await fetch(`/api/drive-file/${fileId}`, {
+          headers: { Authorization: `Bearer ${token}` },
         });
 
         if (!res.ok) throw new Error("Failed to fetch image");
@@ -70,4 +66,3 @@ export function AuthImage({
     />
   );
 }
-

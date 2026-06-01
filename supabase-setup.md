@@ -44,6 +44,15 @@ create table public.uploads (
   "uploadedAt" bigint
 );
 
+-- Create attendance table
+create table public.attendance (
+  id uuid default gen_random_uuid() primary key,
+  "userId" uuid references public.users(id),
+  date text not null,
+  status text default 'present',
+  "recordedAt" bigint
+);
+
 -- Create jobs table
 create table public.jobs (
   id uuid default gen_random_uuid() primary key,
@@ -64,10 +73,10 @@ values ('info', 0, 10000, extract(epoch from now()) * 1000);
 
 ## 3. Realtime Updates
 
-To make the UI update in real-time, you need to enable Postgres changes on the `teamSettings` and `uploads` tables.
+To make the UI update in real-time, you need to enable Postgres changes on the `teamSettings`, `uploads`, and `attendance` tables.
 
 1. Go to **Database > Replication** or **Table Editor > Table Settings**.
-2. Make sure `public."teamSettings"`, `public.users`, and `public.uploads` are added to the Publication so that `supabase.channel` can listen to their changes.
+2. Make sure `public."teamSettings"`, `public.users`, `public.uploads`, and `public.attendance` are added to the Publication so that `supabase.channel` can listen to their changes.
 
 ## 4. Row Level Security (RLS)
 
@@ -79,6 +88,7 @@ alter table public.users enable row level security;
 alter table public."teamSettings" enable row level security;
 alter table public.uploads enable row level security;
 alter table public.jobs enable row level security;
+alter table public.attendance enable row level security;
 
 -- Users can read all users (needed for Leaderboard)
 create policy "Users can view all members" on public.users for select using (true);
@@ -91,6 +101,10 @@ create policy "Anyone can view team settings" on public."teamSettings" for selec
 
 -- Users can view all uploads
 create policy "Anyone can view uploads" on public.uploads for select using (true);
+
+-- Attendance policies
+create policy "Anyone can view attendance" on public.attendance for select using (true);
+create policy "Users can insert own attendance" on public.attendance for insert with check (auth.uid() = "userId");
 
 -- Jobs policies
 create policy "Anyone can view jobs" on public.jobs for select using (true);

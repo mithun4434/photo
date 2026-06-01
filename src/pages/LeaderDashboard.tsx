@@ -18,8 +18,9 @@ import { format, startOfWeek, subWeeks, isSameWeek, differenceInDays, isSameDay 
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { AttendanceCard } from "@/components/AttendanceCard";
-import { TeamAttendance } from "@/components/TeamAttendance";
+import { AttendanceWidget } from "@/components/AttendanceWidget";
+import { AuthImage } from "@/components/AuthImage";
+import * as motion from "motion/react-client";
 
 export default function LeaderDashboard() {
   const { user } = useAuth();
@@ -55,6 +56,8 @@ export default function LeaderDashboard() {
     dueDate: "",
     priority: "medium"
   });
+
+  const [allAttendances, setAllAttendances] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchGlobalStats = async () => {
@@ -95,8 +98,19 @@ export default function LeaderDashboard() {
     const fetchUploads = async () => {
       const { data } = await supabase
         .from('uploads')
-        .select('uploadedAt, userId');
+        .select('*');
       if (data) setUploads(data);
+    };
+
+    const fetchAttendances = async () => {
+      try {
+        const { data } = await supabase
+          .from('attendance')
+          .select('*');
+        if (data) setAllAttendances(data);
+      } catch (err) {
+        console.error(err);
+      }
     };
 
     fetchGlobalStats();
@@ -104,6 +118,7 @@ export default function LeaderDashboard() {
     fetchJobs();
     fetchPhases();
     fetchUploads();
+    fetchAttendances();
 
     // Listen to real-time changes
     const leaderChannel = supabase.channel('schema-db-changes-leader')
@@ -127,6 +142,9 @@ export default function LeaderDashboard() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'uploads' }, (payload) => {
         fetchUploads();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance' }, (payload) => {
+        fetchAttendances();
       })
       .subscribe();
 
@@ -199,14 +217,9 @@ export default function LeaderDashboard() {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData?.session?.access_token;
-      
-      const headers: Record<string, string> = {
-        "Authorization": `Bearer ${token}`
-      };
-
       const res = await fetch(`/api/sync/${userId}`, {
         method: "POST",
-        headers
+        headers: { "Authorization": `Bearer ${token}` }
       });
       if (!res.ok) throw new Error("Sync failed");
       toast.success("User synced successfully");
@@ -411,8 +424,7 @@ export default function LeaderDashboard() {
           </Dialog>
         </header>
 
-        <AttendanceCard />
-        <TeamAttendance />
+        {user && <AttendanceWidget userId={user.id} />}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <Card>
@@ -464,6 +476,8 @@ export default function LeaderDashboard() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Member</TableHead>
+                      <TableHead>Attendance (Today)</TableHead>
+                      <TableHead>Total Present</TableHead>
                       <TableHead>Progress</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
@@ -475,6 +489,9 @@ export default function LeaderDashboard() {
                       const target = member.personalTarget || member.personal_target || 100;
                       const perc = target > 0 ? Math.min((uploaded / target) * 100, 100) : 0;
                       const syncDate = member.lastSyncedAt || member.last_synced_at;
+                      const todayStr = format(new Date(), "yyyy-MM-dd");
+                      const hasAttended = allAttendances.some(a => a.userId === member.id && a.date === todayStr);
+                      const totalDaysPresent = allAttendances.filter(a => a.userId === member.id).length;
                       
                       return (
                         <TableRow key={member.id}>
@@ -492,6 +509,20 @@ export default function LeaderDashboard() {
                             </div>
                           </TableCell>
                           <TableCell>
+                            {hasAttended ? (
+                              <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full font-medium">
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span> Present
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full font-medium">
+                                <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span> Pending
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-semibold">{totalDaysPresent}</span> days
+                          </TableCell>
+                          <TableCell>
                             <div className="flex flex-col gap-1 min-w-[120px]">
                               <div className="flex justify-between text-xs font-medium">
                                 <span>{uploaded} files</span>
@@ -502,7 +533,7 @@ export default function LeaderDashboard() {
                           </TableCell>
                           <TableCell>
                             <div className="text-xs text-neutral-500 flex flex-col">
-                              <span>Supabase: {uploaded}</span>
+                              <span>Drive: {uploaded}</span>
                               {syncDate ? (
                                 <span className="text-[10px] text-neutral-400">Synced: {new Date(syncDate).toLocaleDateString()}</span>
                               ) : (
@@ -512,7 +543,7 @@ export default function LeaderDashboard() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
-                              <Button variant="ghost" size="icon" onClick={() => handleSyncUser(member.id)} title="Sync Cloud">
+                              <Button variant="ghost" size="icon" onClick={() => handleSyncUser(member.id)} title="Sync Drive">
                                 <RefreshCw className="w-4 h-4 text-neutral-500" />
                               </Button>
                               <Button variant="ghost" size="icon" asChild title="View Gallery">
@@ -741,6 +772,40 @@ export default function LeaderDashboard() {
           </Card>
         </div>
 
+        {/* Recent Team Uploads Section */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2 border-b mb-4">
+            <div className="space-y-1">
+              <CardTitle className="text-xl flex items-center gap-2"><ImageIcon className="w-5 h-5 text-primary" /> Recent Team Uploads</CardTitle>
+              <p className="text-sm text-neutral-500">Latest photos uploaded by the team.</p>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {uploads.length === 0 ? (
+              <div className="text-center py-8 text-neutral-500">No photos uploaded yet.</div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                {[...uploads].sort((a, b) => b.uploadedAt - a.uploadedAt).slice(0, 12).map((upload) => (
+                  <motion.div 
+                    key={upload.id} 
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="group relative aspect-square rounded-xl overflow-hidden bg-neutral-100 border border-neutral-200"
+                  >
+                    <AuthImage fileId={upload.driveFileId} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2 pointer-events-none">
+                      <span className="text-white text-[10px] font-medium leading-tight line-clamp-2">{upload.fileName}</span>
+                      <span className="text-white/70 text-[9px] mt-1 truncate">
+                        {members.find(m => m.id === upload.userId)?.name || "Unknown"}
+                      </span>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Phases Management Section */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2 border-b mb-4">
@@ -831,7 +896,7 @@ export default function LeaderDashboard() {
           </CardHeader>
           <CardContent>
             {phases.length === 0 ? (
-              <div className="text-center py-8 text-neutral-500 italic">No phases established yet.</div>
+              <div className="text-center py-8 text-neutral-500">No phases established yet.</div>
             ) : (
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 {phases.map(phase => {
@@ -1049,7 +1114,7 @@ export default function LeaderDashboard() {
           </CardHeader>
           <CardContent>
             {jobs.length === 0 ? (
-              <div className="text-center py-8 text-neutral-500 italic">No tasks created yet.</div>
+              <div className="text-center py-8 text-neutral-500">No tasks created yet.</div>
             ) : (
               <div className="overflow-x-auto">
                 <Table>

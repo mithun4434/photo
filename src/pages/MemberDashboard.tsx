@@ -15,8 +15,7 @@ import { UploadCloud, FileImage, Target, Trophy, Info, RefreshCw, Image as Image
 import * as motion from "motion/react-client";
 import { Link } from "react-router";
 import { AuthImage } from "@/components/AuthImage";
-
-import { AttendanceCard } from "@/components/AttendanceCard";
+import { AttendanceWidget } from "@/components/AttendanceWidget";
 
 export default function MemberDashboard() {
   const { user } = useAuth();
@@ -33,6 +32,7 @@ export default function MemberDashboard() {
   const [isUploading, setIsUploading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   
+  const [myAttendances, setMyAttendances] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -71,6 +71,14 @@ export default function MemberDashboard() {
       if (data) setMyJobs(data);
     };
 
+    const fetchMyAttendances = async () => {
+      const { data } = await supabase
+        .from('attendance')
+        .select('*')
+        .eq('userId', user.id);
+      if (data) setMyAttendances(data);
+    };
+
     const fetchFolders = async () => {
       try {
         const { data: sessionData } = await supabase.auth.getSession();
@@ -100,6 +108,7 @@ export default function MemberDashboard() {
     fetchMyJobs();
     fetchPhases();
     fetchFolders();
+    fetchMyAttendances();
 
     // Listen to real-time changes
     const teamChannel = supabase.channel('schema-db-changes')
@@ -123,6 +132,9 @@ export default function MemberDashboard() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `assignedTo=eq.${user.id}` }, (payload) => {
         fetchMyJobs();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance', filter: `userId=eq.${user.id}` }, (payload) => {
+        fetchMyAttendances();
       })
       .subscribe();
 
@@ -153,13 +165,11 @@ export default function MemberDashboard() {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData?.session?.access_token;
       
-      const headers: Record<string, string> = {
-        "Authorization": `Bearer ${token}`
-      };
-
       const res = await fetch(`/api/sync/${user.id}`, {
         method: "POST",
-        headers
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sync failed");
@@ -224,13 +234,11 @@ export default function MemberDashboard() {
         formData.append("targetFolderId", selectedFolderId);
       }
 
-      const headers: Record<string, string> = {
-        "Authorization": `Bearer ${token}`
-      };
-
       const res = await fetch("/api/upload", {
         method: "POST",
-        headers,
+        headers: {
+          "Authorization": `Bearer ${token}`
+        },
         body: formData
       });
 
@@ -271,19 +279,17 @@ export default function MemberDashboard() {
             <h1 className="text-3xl font-bold tracking-tight text-white">Welcome back, {user.name || "Member"}</h1>
             <p className="text-white/70 mt-1">Track your progress and upload new photos here.</p>
           </div>
-          <div className="flex gap-2">
-            <Button onClick={syncWithDrive} disabled={isSyncing} variant="outline" className="gap-2 text-black bg-white hover:bg-neutral-100">
-              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              Sync Uploads
-            </Button>
-          </div>
+          <Button onClick={syncWithDrive} disabled={isSyncing} variant="outline" className="gap-2">
+            <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+            Sync
+          </Button>
         </header>
-
-        <AttendanceCard />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
             
+            <AttendanceWidget userId={user.id} />
+
             {/* Upload Area */}
             <Card className="border-dashed border-2 bg-neutral-50/50">
               <CardContent className="p-8 flex flex-col items-center justify-center text-center">
@@ -351,7 +357,7 @@ export default function MemberDashboard() {
               </CardHeader>
               <CardContent>
                 {myJobs.length === 0 ? (
-                  <p className="text-sm text-neutral-500 italic py-4 text-center">No assigned tasks.</p>
+                  <p className="text-sm text-neutral-500 py-4 text-center">No assigned tasks.</p>
                 ) : (
                   <div className="space-y-3">
                     {myJobs.map((job) => (
@@ -398,7 +404,7 @@ export default function MemberDashboard() {
               </CardHeader>
               <CardContent>
                 {myUploads.length === 0 ? (
-                  <p className="text-sm text-neutral-500 italic py-4 text-center">No uploads yet.</p>
+                  <p className="text-sm text-neutral-500 py-4 text-center">No uploads yet.</p>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                     {myUploads.map((upload, idx) => (
@@ -539,67 +545,92 @@ export default function MemberDashboard() {
               </Card>
             )}
 
-            {/* Calendar View */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-lg flex items-center justify-between">
-                  Calendar
-                  <CalendarDays className="w-5 h-5 text-neutral-400" />
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr] gap-6">
-                  <div className="flex justify-center border rounded-lg p-2 w-fit h-fit overflow-x-auto">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Calendar View */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg flex items-center justify-between">
+                    Calendar
+                    <CalendarDays className="w-5 h-5 text-neutral-400" />
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-6">
+                    <div className="flex justify-center border rounded-lg p-2 w-fit h-fit overflow-x-auto">
+                      <Calendar
+                        mode="single"
+                        selected={activeDate}
+                        onSelect={setActiveDate}
+                        modifiers={{
+                          hasTask: (date) => myJobs.some(j => j.dueDate && isSameDay(new Date(j.dueDate), date)),
+                          hasPhase: (date) => phases.some(p => p.startDate && p.endDate && date.getTime() >= p.startDate && date.getTime() <= p.endDate)
+                        }}
+                        modifiersClassNames={{
+                          hasTask: "bg-blue-100 text-blue-700 font-bold",
+                          hasPhase: "underline decoration-amber-500 decoration-2 underline-offset-4"
+                        }}
+                      />
+                    </div>
+                    {activeDate && (
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-medium text-neutral-700">{format(activeDate, "MMM d, yyyy")}</h4>
+                        <div className="space-y-2 max-h-[250px] overflow-y-auto pr-2">
+                          {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).map(p => (
+                            <div key={p.id} className="text-xs p-2 rounded bg-amber-50 border border-amber-100">
+                              <span className="font-semibold text-amber-800">{p.name}</span>
+                              <p className="text-amber-700 whitespace-pre-wrap mt-1">{p.description}</p>
+                            </div>
+                          ))}
+                          {myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).map(j => (
+                            <div key={j.id} className="text-xs p-2 rounded bg-blue-50 border border-blue-100 flex items-start justify-between gap-2">
+                              <div>
+                                <span className="font-semibold text-blue-800 block">{j.title}</span>
+                                <span className="uppercase text-[9px] px-1 py-0.5 rounded bg-blue-200 text-blue-700 inline-block mt-1">{j.status}</span>
+                              </div>
+                              {j.status !== 'completed' && (
+                                <Button size="sm" variant="outline" className="h-6 text-[10px] px-2 whitespace-nowrap" onClick={() => handleMarkJobComplete(j.id)}>Done</Button>
+                              )}
+                            </div>
+                          ))}
+                          {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).length === 0 &&
+                           myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).length === 0 && (
+                            <div className="text-neutral-400 text-xs">No events or tasks.</div>
+                           )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+  
+              {/* Attendance Calendar View */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg flex items-center justify-between">
+                    Attendance History
+                    <CheckCircle2 className="w-5 h-5 text-green-500" />
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex justify-center border rounded-lg p-2 overflow-x-auto w-fit mx-auto h-fit">
                     <Calendar
                       mode="single"
-                      selected={activeDate}
-                      onSelect={setActiveDate}
                       modifiers={{
-                        hasTask: (date) => myJobs.some(j => j.dueDate && isSameDay(new Date(j.dueDate), date)),
-                        hasPhase: (date) => phases.some(p => p.startDate && p.endDate && date.getTime() >= p.startDate && date.getTime() <= p.endDate)
+                        present: (date) => myAttendances.some(a => a.date === format(date, "yyyy-MM-dd"))
                       }}
                       modifiersClassNames={{
-                        hasTask: "bg-blue-100 text-blue-700 font-bold",
-                        hasPhase: "underline decoration-amber-500 decoration-2 underline-offset-4"
+                        present: "bg-green-100 text-green-700 font-bold rounded-full"
                       }}
                     />
                   </div>
-                  {activeDate && (
-                    <div className="space-y-3">
-                      <h4 className="text-sm font-medium text-neutral-700">{format(activeDate, "MMM d, yyyy")}</h4>
-                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
-                        {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).map(p => (
-                          <div key={p.id} className="text-xs p-2 rounded bg-amber-50 border border-amber-100">
-                            <span className="font-semibold text-amber-800">{p.name}</span>
-                            <p className="text-amber-700 whitespace-pre-wrap mt-1">{p.description}</p>
-                          </div>
-                        ))}
-                        {myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).map(j => (
-                          <div key={j.id} className="text-xs p-2 rounded bg-blue-50 border border-blue-100 flex items-start justify-between gap-2">
-                            <div>
-                              <span className="font-semibold text-blue-800 block">{j.title}</span>
-                              <span className="uppercase text-[9px] px-1 py-0.5 rounded bg-blue-200 text-blue-700 inline-block mt-1">{j.status}</span>
-                            </div>
-                            {j.status !== 'completed' && (
-                              <Button size="sm" variant="outline" className="h-6 text-[10px] px-2 whitespace-nowrap" onClick={() => handleMarkJobComplete(j.id)}>Done</Button>
-                            )}
-                          </div>
-                        ))}
-                        {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).length === 0 &&
-                         myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).length === 0 && (
-                          <div className="text-neutral-400 text-xs italic">No events or tasks.</div>
-                         )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </div>
 
             <Card className="bg-amber-50 border-amber-200">
               <CardContent className="p-4 flex gap-3 text-sm text-amber-800">
                 <Info className="w-5 h-5 flex-shrink-0" />
-                <p>Photos are securely stored in Supabase Storage and count towards your personal and team targets automatically.</p>
+                <p>Photos are automatically organized into your personal Google Drive folder upon upload.</p>
               </CardContent>
             </Card>
 

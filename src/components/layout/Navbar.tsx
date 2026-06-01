@@ -12,15 +12,10 @@ export default function Navbar() {
     <nav className="glass sticky top-0 z-10 px-4 py-3 sm:px-6 lg:px-8">
       <div className="flex items-center justify-between max-w-7xl mx-auto">
         <Link to="/" className="flex items-center gap-2 text-white hover:opacity-80 transition-opacity">
-          <img 
-            src="/logo.png" 
-            alt="Neural Sharks" 
-            className="w-8 h-8 object-contain drop-shadow-[0_0_8px_rgba(255,255,255,0.2)]"
-            onError={(e) => {
-              e.currentTarget.style.display = 'none';
-            }}
-          />
-          <span className="font-semibold text-lg tracking-tight hidden sm:inline-block">Neural Sharks</span>
+          <div className="bg-white/10 p-1.5 rounded-lg border border-white/20">
+            <ImagePlus className="w-5 h-5 text-white" />
+          </div>
+          <span className="font-semibold text-lg tracking-tight hidden sm:inline-block">Photo Tracker</span>
         </Link>
         
         <div className="flex items-center gap-4">
