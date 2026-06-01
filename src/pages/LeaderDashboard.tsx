@@ -18,6 +18,8 @@ import { format, startOfWeek, subWeeks, isSameWeek, differenceInDays, isSameDay 
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { AttendanceCard } from "@/components/AttendanceCard";
+import { TeamAttendance } from "@/components/TeamAttendance";
 
 export default function LeaderDashboard() {
   const { user } = useAuth();
@@ -197,9 +199,14 @@ export default function LeaderDashboard() {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData?.session?.access_token;
+      
+      const headers: Record<string, string> = {
+        "Authorization": `Bearer ${token}`
+      };
+
       const res = await fetch(`/api/sync/${userId}`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${token}` }
+        headers
       });
       if (!res.ok) throw new Error("Sync failed");
       toast.success("User synced successfully");
@@ -404,6 +411,9 @@ export default function LeaderDashboard() {
           </Dialog>
         </header>
 
+        <AttendanceCard />
+        <TeamAttendance />
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -492,7 +502,7 @@ export default function LeaderDashboard() {
                           </TableCell>
                           <TableCell>
                             <div className="text-xs text-neutral-500 flex flex-col">
-                              <span>Drive: {uploaded}</span>
+                              <span>Supabase: {uploaded}</span>
                               {syncDate ? (
                                 <span className="text-[10px] text-neutral-400">Synced: {new Date(syncDate).toLocaleDateString()}</span>
                               ) : (
@@ -502,7 +512,7 @@ export default function LeaderDashboard() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
-                              <Button variant="ghost" size="icon" onClick={() => handleSyncUser(member.id)} title="Sync Drive">
+                              <Button variant="ghost" size="icon" onClick={() => handleSyncUser(member.id)} title="Sync Cloud">
                                 <RefreshCw className="w-4 h-4 text-neutral-500" />
                               </Button>
                               <Button variant="ghost" size="icon" asChild title="View Gallery">
@@ -785,7 +795,6 @@ export default function LeaderDashboard() {
                             mode="single"
                             selected={newPhase.startDate}
                             onSelect={(d) => setNewPhase({...newPhase, startDate: d})}
-                            initialFocus
                           />
                         </PopoverContent>
                       </Popover>
@@ -810,7 +819,6 @@ export default function LeaderDashboard() {
                             mode="single"
                             selected={newPhase.endDate}
                             onSelect={(d) => setNewPhase({...newPhase, endDate: d})}
-                            initialFocus
                           />
                         </PopoverContent>
                       </Popover>
@@ -928,7 +936,6 @@ export default function LeaderDashboard() {
                               mode="single"
                               selected={editingPhase.startDate ? new Date(editingPhase.startDate) : undefined}
                               onSelect={(d) => setEditingPhase({...editingPhase, startDate: d})}
-                              initialFocus
                             />
                           </PopoverContent>
                         </Popover>
@@ -953,7 +960,6 @@ export default function LeaderDashboard() {
                               mode="single"
                               selected={editingPhase.endDate ? new Date(editingPhase.endDate) : undefined}
                               onSelect={(d) => setEditingPhase({...editingPhase, endDate: d})}
-                              initialFocus
                             />
                           </PopoverContent>
                         </Popover>

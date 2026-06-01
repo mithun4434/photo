@@ -16,6 +16,8 @@ import * as motion from "motion/react-client";
 import { Link } from "react-router";
 import { AuthImage } from "@/components/AuthImage";
 
+import { AttendanceCard } from "@/components/AttendanceCard";
+
 export default function MemberDashboard() {
   const { user } = useAuth();
   const [folders, setFolders] = useState<{id: string, name: string}[]>([]);
@@ -151,11 +153,13 @@ export default function MemberDashboard() {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData?.session?.access_token;
       
+      const headers: Record<string, string> = {
+        "Authorization": `Bearer ${token}`
+      };
+
       const res = await fetch(`/api/sync/${user.id}`, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`
-        }
+        headers
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sync failed");
@@ -220,11 +224,13 @@ export default function MemberDashboard() {
         formData.append("targetFolderId", selectedFolderId);
       }
 
+      const headers: Record<string, string> = {
+        "Authorization": `Bearer ${token}`
+      };
+
       const res = await fetch("/api/upload", {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`
-        },
+        headers,
         body: formData
       });
 
@@ -265,11 +271,15 @@ export default function MemberDashboard() {
             <h1 className="text-3xl font-bold tracking-tight text-white">Welcome back, {user.name || "Member"}</h1>
             <p className="text-white/70 mt-1">Track your progress and upload new photos here.</p>
           </div>
-          <Button onClick={syncWithDrive} disabled={isSyncing} variant="outline" className="gap-2">
-            <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-            Sync
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={syncWithDrive} disabled={isSyncing} variant="outline" className="gap-2 text-black bg-white hover:bg-neutral-100">
+              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+              Sync Uploads
+            </Button>
+          </div>
         </header>
+
+        <AttendanceCard />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
@@ -589,7 +599,7 @@ export default function MemberDashboard() {
             <Card className="bg-amber-50 border-amber-200">
               <CardContent className="p-4 flex gap-3 text-sm text-amber-800">
                 <Info className="w-5 h-5 flex-shrink-0" />
-                <p>Photos are automatically organized into your personal Google Drive folder upon upload.</p>
+                <p>Photos are securely stored in Supabase Storage and count towards your personal and team targets automatically.</p>
               </CardContent>
             </Card>
 

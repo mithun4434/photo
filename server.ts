@@ -31,7 +31,13 @@ const supabase = createClient(supabaseUrl || 'https://placeholder.supabase.co', 
 // Multer parsing configuration
 const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB limit
 
-async function getDriveClient() {
+async function getDriveClient(accessToken?: string) {
+  if (accessToken) {
+    const oauth2Client = new google.auth.OAuth2();
+    oauth2Client.setCredentials({ access_token: accessToken });
+    return google.drive({ version: "v3", auth: oauth2Client });
+  }
+
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON inside environment");
   }
@@ -49,7 +55,7 @@ async function getDriveClient() {
       throw new Error("Missing client_email or private_key in the loaded JSON.");
     }
   } catch(e) {
-    throw new Error("Invalid GOOGLE_SERVICE_ACCOUNT_JSON: You provided an invalid format (possibly just the private key). Please go to Google Cloud Console > IAM & Admin > Service Accounts, create a new 'JSON' key, and paste the ENTIRE downloaded file contents (which starts with {\"type\": \"service_account\"...}) into the GOOGLE_SERVICE_ACCOUNT_JSON environment variable.");
+    throw new Error("Invalid GOOGLE_SERVICE_ACCOUNT_JSON format.");
   }
 
   const auth = new google.auth.GoogleAuth({
@@ -58,6 +64,52 @@ async function getDriveClient() {
   });
 
   return google.drive({ version: "v3", auth });
+}
+
+async function getAllFolderIds(drive: any, parentId: string): Promise<string[]> {
+  const folders: string[] = [parentId];
+  let pageToken: string | undefined = undefined;
+
+  do {
+    const res = await drive.files.list({
+      q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: "nextPageToken, files(id)",
+      pageToken: pageToken,
+    });
+    
+    const children = res.data.files || [];
+    for (const child of children) {
+      if (child.id) {
+        folders.push(child.id);
+      }
+    }
+    pageToken = res.data.nextPageToken;
+  } while (pageToken);
+
+  return folders;
+}
+
+async function getDriveFileCount(drive: any, folderIds: string[]) {
+  let totalCount = 0;
+  
+  // We process folders in batches to avoid overwhelming the API
+  for (const folderId of folderIds) {
+    let pageToken: string | undefined = undefined;
+    do {
+      const res = await drive.files.list({
+        // Do NOT count folders themselves, only files
+        q: `'${folderId}' in parents and mimeType!='application/vnd.google-apps.folder' and trashed=false`,
+        fields: "nextPageToken, files(id)",
+        pageToken: pageToken,
+        pageSize: 1000,
+      });
+
+      totalCount += (res.data.files || []).length;
+      pageToken = res.data.nextPageToken;
+    } while (pageToken);
+  }
+  
+  return totalCount;
 }
 
 async function recalculateTeamTotal() {
@@ -83,60 +135,12 @@ async function recalculateTeamTotal() {
   }
 }
 
-async function getAllFolderIds(drive: any, parentId: string): Promise<string[]> {
-  let ids = [parentId];
-  try {
-    let pageToken: string | undefined = undefined;
-    const q = `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-    do {
-      const res = await drive.files.list({ q, fields: 'nextPageToken, files(id)', pageToken, pageSize: 1000 });
-      for (const f of res.data.files || []) {
-        if (f.id) {
-          ids = ids.concat(await getAllFolderIds(drive, f.id));
-        }
-      }
-      pageToken = res.data.nextPageToken || undefined;
-    } while (pageToken);
-  } catch(e) {}
-  return ids;
-}
-
-async function getDriveFileCount(folderId: string, userId?: string) {
-  const drive = await getDriveClient();
-  const folderIds = await getAllFolderIds(drive, folderId);
-  const parentQuery = folderIds.map(id => `'${id}' in parents`).join(' or ');
-  const q = `(${parentQuery}) and mimeType contains 'image/' and trashed = false`;
+async function getSupabaseStorageCount(userId: string) {
   let count = 0;
-  let pageToken: string | undefined = undefined;
-  
-  if (userId) {
-    await supabase.from('uploads').delete().eq('userId', userId);
-  }
-
-  do {
-    const response = await drive.files.list({
-      q,
-      pageSize: 1000,
-      pageToken,
-      fields: 'nextPageToken, files(id, name, createdTime)'
-    });
-    
-    const files = response.data.files || [];
-    count += files.length;
-    
-    if (userId && files.length > 0) {
-      const uploadRecords = files.map(f => ({
-        userId,
-        fileName: f.name || 'Untitled',
-        driveFileId: f.id || '',
-        uploadedAt: f.createdTime ? new Date(f.createdTime).getTime() : Date.now()
-      }));
-      await supabase.from('uploads').insert(uploadRecords);
-    }
-
-    pageToken = response.data.nextPageToken || undefined;
-  } while (pageToken);
-  
+  try {
+    const { count: dbCount } = await supabase.from('uploads').select('*', { count: 'exact', head: true }).eq('userId', userId);
+    if (dbCount !== null) count = dbCount;
+  } catch(e) {}
   return count;
 }
 
@@ -160,6 +164,7 @@ async function verifyAuth(req: express.Request, res: express.Response, next: exp
 }
 
 async function startServer() {
+  await ensureBucket();
   const app = express();
   const PORT = 3000;
 
@@ -203,25 +208,12 @@ async function startServer() {
         { name: 'Gokul', role: 'member', email: process.env.GOKUL_EMAIL, password: process.env.GOKUL_PASSWORD, driveFolderId: process.env.GOKUL_DRIVE_FOLDER_ID },
       ];
 
-      const drive = await getDriveClient();
-      console.log('Seed API Drive Auth Email: ', (drive as any)._options?.auth?.credentials?.client_email || 'unknown');
       let createdCount = 0;
 
-      // First verify all folders
+      // Verify all configs
       for (const userConfig of predefinedUsers) {
-        if (!userConfig.email || !userConfig.password || !userConfig.driveFolderId) {
-          return res.status(400).json({ error: `Missing config (email, password, or folder ID) for ${userConfig.name}` });
-        }
-
-        // Verify folder is accessible
-        try {
-          await drive.files.get({
-            fileId: userConfig.driveFolderId,
-            fields: "id, name"
-          });
-        } catch (e: any) {
-          const email = (drive as any)._options?.auth?.credentials?.client_email || 'unknown';
-          return res.status(400).json({ error: `Using: ${email} -> Folder ID ${userConfig.driveFolderId} not accessible. Error: ${e.message}` });
+        if (!userConfig.email || !userConfig.password) {
+          return res.status(400).json({ error: `Missing config (email, password) for ${userConfig.name}` });
         }
       }
 
@@ -339,6 +331,7 @@ async function startServer() {
     try {
       const targetUserId = req.params.userId;
       const callerId = (req as any).user.id;
+      const driveToken = req.headers["x-google-auth"] as string | undefined;
       
       if (callerId !== targetUserId) {
         const { data: caller } = await supabase.from('users').select('role').eq('id', callerId).single();
@@ -350,11 +343,14 @@ async function startServer() {
       const { data: userData } = await supabase.from('users').select('*').eq('id', targetUserId).single();
       if (!userData) return res.status(404).json({ error: "User not found" });
 
-      const folderId = userData.driveFolderId || userData.drive_folder_id;
-      let count = 0;
-      if (folderId) {
-        count = await getDriveFileCount(folderId, targetUserId);
+      const driveFolderId = userData.driveFolderId;
+      if (!driveFolderId) {
+        return res.status(400).json({ error: "No Drive folder linked to this user." });
       }
+
+      const drive = await getDriveClient(driveToken);
+      const allFolderIds = await getAllFolderIds(drive, driveFolderId);
+      const count = await getDriveFileCount(drive, allFolderIds);
 
       const now = Date.now();
       
@@ -364,7 +360,6 @@ async function startServer() {
       }).eq('id', targetUserId);
       
       if (updateError) {
-        // Fallback to snake_case if custom column omitted in camelCase
         await supabase.from('users').update({ 
           uploaded_count: count,
           last_synced_at: now
@@ -374,6 +369,9 @@ async function startServer() {
       await recalculateTeamTotal();
       res.json({ success: true, count, lastSyncedAt: now });
     } catch (e: any) {
+      if (e.message?.includes("Invalid Credentials")) {
+        return res.status(401).json({ error: "Google Drive authentication failed or expired." });
+      }
       res.status(500).json({ error: e.message || "Sync failed" });
     }
   });
@@ -383,6 +381,7 @@ async function startServer() {
     try {
       const targetUserId = req.params.userId;
       const callerId = (req as any).user.id;
+      const driveToken = req.headers["x-google-auth"] as string | undefined;
       
       if (callerId !== targetUserId) {
         const { data: caller } = await supabase.from('users').select('role').eq('id', callerId).single();
@@ -392,40 +391,112 @@ async function startServer() {
       }
 
       const { data: userData } = await supabase.from('users').select('*').eq('id', targetUserId).single();
-      const folderId = userData?.driveFolderId || userData?.drive_folder_id;
-      
-      if (!folderId) return res.json({ files: [] });
+      if (!userData || !userData.driveFolderId) {
+        return res.status(400).json({ error: "No Drive folder mapped" });
+      }
 
-      const drive = await getDriveClient();
-      const pageToken = req.query.pageToken as string | undefined;
+      const drive = await getDriveClient(driveToken);
+      const allFolderIds = await getAllFolderIds(drive, userData.driveFolderId);
       
-      const folderIds = await getAllFolderIds(drive, folderId);
-      const parentQuery = folderIds.map(id => `'${id}' in parents`).join(' or ');
-      const q = `(${parentQuery}) and mimeType contains 'image/' and trashed = false`;
+      let queryStr = `(${allFolderIds.map(id => `'${id}' in parents`).join(" or ")}) and mimeType contains 'image/' and trashed=false`;
       
-      const response = await drive.files.list({
-        q,
-        pageSize: parseInt(req.query.pageSize as string || "50"),
-        pageToken,
-        fields: 'nextPageToken, files(id, name, mimeType, thumbnailLink, webViewLink, webContentLink, createdTime, size)',
-        orderBy: 'createdTime desc'
+      const driveRes = await drive.files.list({
+        q: queryStr,
+        fields: "nextPageToken, files(id, name, webViewLink, webContentLink, thumbnailLink, createdTime, size, mimeType)",
+        orderBy: "createdTime desc",
+        pageSize: 50,
+        pageToken: req.query.pageToken as string | undefined,
       });
-      
-      res.json({ files: response.data.files || [], nextPageToken: response.data.nextPageToken });
+
+      res.json({ files: driveRes.data.files, nextPageToken: driveRes.data.nextPageToken });
     } catch (e: any) {
+      if (e.message?.includes("Invalid Credentials")) {
+        return res.status(401).json({ error: "Google Drive authentication failed or expired." });
+      }
       res.status(500).json({ error: e.message || "Fetch failed" });
     }
   });
 
-  // Stream drive proxy (for full download)
-  app.get("/api/drive-file/:fileId", verifyAuth, async (req, res) => {
+  // Get My Attendance
+  app.get("/api/attendance/me", verifyAuth, async (req, res) => {
     try {
-       const drive = await getDriveClient();
-       const response = await drive.files.get({ fileId: req.params.fileId, alt: 'media' }, { responseType: 'stream' });
-       if (response.headers['content-type']) {
-          res.setHeader('Content-Type', response.headers['content-type']);
-       }
-       response.data.pipe(res);
+      const userId = (req as any).user.id;
+      
+      const { data: { user }, error } = await supabase.auth.admin.getUserById(userId);
+      if (error || !user) throw new Error("User not found");
+      
+      res.json({ success: true, attendance: user.user_metadata?.attendance || {} });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to get my attendance" });
+    }
+  });
+
+  // Mark Attendance (Every User)
+  app.post("/api/attendance", verifyAuth, async (req, res) => {
+    try {
+      const userId = (req as any).user.id;
+      const { date } = req.body; // format 'YYYY-MM-DD'
+      
+      if (!date) return res.status(400).json({ error: "Date is required" });
+      
+      const { data: { user }, error } = await supabase.auth.admin.getUserById(userId);
+      if (error || !user) throw new Error("User not found");
+      
+      const currentAttendance = user.user_metadata?.attendance || {};
+      currentAttendance[date] = true;
+      
+      const { error: updateError } = await supabase.auth.admin.updateUserById(userId, {
+        user_metadata: { ...user.user_metadata, attendance: currentAttendance }
+      });
+      if (updateError) throw updateError;
+      
+      res.json({ success: true, attendance: currentAttendance });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to mark attendance" });
+    }
+  });
+
+  // Get All Attendance (Leader/Co-Leader)
+  app.get("/api/attendance/all", verifyAuth, async (req, res) => {
+    try {
+      const callerId = (req as any).user.id;
+      const { data: caller } = await supabase.from('users').select('role').eq('id', callerId).single();
+      
+      if (!caller || !['leader', 'co-leader', 'co-lead'].includes(caller.role)) {
+        return res.status(403).json({ error: "Forbidden. Leaders only." });
+      }
+
+      const { data: { users }, error } = await supabase.auth.admin.listUsers();
+      if (error) throw error;
+      
+      const attendanceData = users.map(u => ({
+        userId: u.id,
+        name: u.user_metadata?.name || 'Unknown',
+        role: u.user_metadata?.role || 'member',
+        attendance: u.user_metadata?.attendance || {}
+      }));
+      
+      res.json({ success: true, data: attendanceData });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to get all attendance" });
+    }
+  });
+
+  // Proxy to just redirect to the public URL for images
+  app.get("/api/drive-file/:fileId(*)", verifyAuth, async (req, res) => {
+    try {
+       const driveToken = req.headers["x-google-auth"] as string | undefined;
+       const drive = await getDriveClient(driveToken);
+       
+       const fileResponse = await drive.files.get(
+        { fileId: req.params.fileId, alt: "media" },
+        { responseType: "stream" }
+       );
+
+       const ct = fileResponse.headers["content-type"];
+       if (ct) res.setHeader("Content-Type", ct);
+       
+       fileResponse.data.on("end", () => res.end()).on("error", (err) => res.status(500).send(err)).pipe(res);
     } catch (e) {
        res.status(500).send("File fetch error");
     }
@@ -433,102 +504,82 @@ async function startServer() {
 
   app.get("/api/folders", verifyAuth, async (req, res) => {
     try {
+      const driveToken = req.headers["x-google-auth"] as string | undefined;
       const uid = (req as any).user.id;
+      
       const { data: userData } = await supabase.from('users').select('*').eq('id', uid).single();
-      if (!userData) return res.status(404).json({ error: "User not found." });
-      
-      let parentId = userData.driveFolderId || userData.drive_folder_id;
-      if (!parentId) return res.status(400).json({ error: "No primary folder configured." });
+      if (!userData || !userData.driveFolderId) {
+        return res.json({ folders: [] });
+      }
 
-      const drive = await getDriveClient();
+      const drive = await getDriveClient(driveToken);
       
-      let allFolders: any[] = [];
-      const fetchFolders = async (pid: string, parentPath: string) => {
-        let pageToken: string | undefined = undefined;
-        const q = `'${pid}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-        do {
-          const fsRes = await drive.files.list({ q, fields: 'nextPageToken, files(id, name)', pageToken, pageSize: 1000 });
-          for (const f of fsRes.data.files || []) {
-            if (f.id && f.name) {
-              const fullPath = parentPath ? `${parentPath}/${f.name}` : f.name;
-              allFolders.push({ id: f.id, name: fullPath });
-              await fetchFolders(f.id, fullPath);
-            }
-          }
-          pageToken = fsRes.data.nextPageToken || undefined;
-        } while (pageToken);
-      };
-      
-      allFolders.push({ id: parentId, name: 'Root Folder' });
-      await fetchFolders(parentId, '');
+      const driveRes = await drive.files.list({
+        q: `'${userData.driveFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+        fields: "files(id, name)",
+        orderBy: "name",
+      });
 
-      res.json({ folders: allFolders });
+      res.json({ folders: driveRes.data.files || [] });
     } catch(e: any) {
-      res.status(500).json({ error: e.message });
+      if (e.message?.includes("Invalid Credentials")) {
+        return res.status(401).json({ error: "Google Drive authentication failed or expired." });
+      }
+      res.status(500).json({ error: e.message || "Failed to fetch folders" });
     }
   });
 
   app.post("/api/folders", verifyAuth, express.json(), async (req, res) => {
     try {
-       const { name, parentId: requestParentId } = req.body;
-       if (!name) return res.status(400).json({ error: "Name is required" });
-       
+       const driveToken = req.headers["x-google-auth"] as string | undefined;
        const uid = (req as any).user.id;
+       const { name } = req.body;
+       
+       if (!name) return res.status(400).json({ error: "Folder name required" });
+
        const { data: userData } = await supabase.from('users').select('*').eq('id', uid).single();
-       if (!userData) return res.status(404).json({ error: "User not found." });
-       
-       let rootId = userData.driveFolderId || userData.drive_folder_id;
-       if (!rootId) return res.status(400).json({ error: "No primary folder configured." });
-       
-       const actualParentId = requestParentId || rootId;
-       
-       const drive = await getDriveClient();
+       if (!userData || !userData.driveFolderId) {
+         return res.status(400).json({ error: "User has no root folder linked." });
+       }
+
+       const drive = await getDriveClient(driveToken);
+
        const fileMetadata = {
          name: name,
          mimeType: 'application/vnd.google-apps.folder',
-         parents: [actualParentId]
+         parents: [userData.driveFolderId]
        };
-       const folderRes = await drive.files.create({
+
+       const folder = await drive.files.create({
          requestBody: fileMetadata,
-         fields: 'id, name'
+         fields: 'id, name',
        });
        
-       res.json({ success: true, folder: folderRes.data });
+       res.json({ success: true, folder: folder.data });
     } catch(e: any) {
-       res.status(500).json({ error: e.message });
+       res.status(500).json({ error: e.message || "Failed to create folder" });
     }
   });
 
   app.post("/api/upload", verifyAuth, upload.array("photos", 50), async (req, res) => {
     try {
       const files = req.files as Express.Multer.File[];
+      const { folderId } = req.body;
       const uid = (req as any).user.id;
+      const driveToken = req.headers["x-google-auth"] as string | undefined;
       
       if (!files || files.length === 0) {
         return res.status(400).json({ error: "No files uploaded." });
       }
 
-      // 1. Get user document from Supabase to find Drive Folder ID
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', uid)
-        .single();
-      
-      if (userError || !userData) {
-        return res.status(404).json({ error: "User not found." });
-      }
-      
-      let baseFolderId = userData.driveFolderId || userData.drive_folder_id;
-      let targetFolderId = req.body.targetFolderId || baseFolderId;
-
-      const drive = await getDriveClient();
-
-      if (!baseFolderId) {
-        return res.status(400).json({ error: "No Google Drive folder configured for this user." });
+      const { data: userData } = await supabase.from('users').select('*').eq('id', uid).single();
+      if (!userData || !userData.driveFolderId) {
+        return res.status(400).json({ error: "User has no root folder linked." });
       }
 
-      // 3. Upload all files
+      const uploadFolder = folderId || userData.driveFolderId;
+      const drive = await getDriveClient(driveToken);
+
       let uploadedIds = [];
       let uploadCount = 0;
       
@@ -536,38 +587,25 @@ async function startServer() {
         const bufferStream = new stream.PassThrough();
         bufferStream.end(file.buffer);
 
-        const media = {
-          mimeType: file.mimetype,
-          body: bufferStream,
-        };
-
-        const fileMetadata = {
-          name: file.originalname,
-          parents: [targetFolderId]
-        };
-
-        const uploadRes = await drive.files.create({
-          requestBody: fileMetadata,
-          media,
-          fields: "id"
-        });
-        
-        const fileId = uploadRes.data.id;
-        
-        // 4. Create Uploads database record
-        if (fileId) {
-          const { error: insertError } = await supabase.from('uploads').insert({
-            userId: uid,
-            fileName: file.originalname,
-            driveFileId: fileId,
-            uploadedAt: Date.now()
+        try {
+          const driveRes = await drive.files.create({
+            requestBody: {
+              name: file.originalname,
+              parents: [uploadFolder],
+            },
+            media: {
+              mimeType: file.mimetype,
+              body: bufferStream,
+            },
+            fields: "id",
           });
-          if (!insertError) {
-             uploadCount++;
-             uploadedIds.push(fileId);
-          } else {
-             console.error(insertError);
+          
+          if (driveRes.data?.id) {
+            uploadCount++;
+            uploadedIds.push(driveRes.data.id);
           }
+        } catch(uploadErr: any) {
+          console.error("Single file upload err:", uploadErr);
         }
       }
 
@@ -579,13 +617,14 @@ async function startServer() {
            uploaded_count: currentCount + uploadCount
         }).eq('id', uid);
         
-        // Just run recalculate directly to ensure consistency
         await recalculateTeamTotal();
       }
 
       res.json({ success: true, count: uploadCount, uploadedIds });
     } catch (error: any) {
-      console.error("Upload error:", error);
+      if (error.message?.includes("Invalid Credentials")) {
+        return res.status(401).json({ error: "Google Drive authentication failed or expired." });
+      }
       res.status(500).json({ status: "error", message: error.message || "Upload failed" });
     }
   });
