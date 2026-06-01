@@ -545,56 +545,67 @@ export default function MemberDashboard() {
               </Card>
             )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 gap-6">
               {/* Calendar View */}
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-lg flex items-center justify-between">
-                    Calendar
+                    Calendar & Attendance
                     <CalendarDays className="w-5 h-5 text-neutral-400" />
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-6">
-                    <div className="flex justify-center border rounded-lg p-2 w-fit h-fit overflow-x-auto">
+                  <div className="grid grid-cols-1 md:grid-cols-[auto_1fr] gap-6">
+                    <div className="flex justify-center w-full md:w-auto h-fit">
                       <Calendar
                         mode="single"
                         selected={activeDate}
                         onSelect={setActiveDate}
                         modifiers={{
                           hasTask: (date) => myJobs.some(j => j.dueDate && isSameDay(new Date(j.dueDate), date)),
-                          hasPhase: (date) => phases.some(p => p.startDate && p.endDate && date.getTime() >= p.startDate && date.getTime() <= p.endDate)
+                          hasPhase: (date) => phases.some(p => p.startDate && p.endDate && date.getTime() >= p.startDate && date.getTime() <= p.endDate),
+                          present: (date) => myAttendances.some(a => a.date === format(date, "yyyy-MM-dd"))
                         }}
                         modifiersClassNames={{
                           hasTask: "bg-blue-100 text-blue-700 font-bold",
-                          hasPhase: "underline decoration-amber-500 decoration-2 underline-offset-4"
+                          hasPhase: "underline decoration-amber-500 decoration-2 underline-offset-4",
+                          present: "bg-green-100 text-green-700 font-bold rounded-full"
                         }}
                       />
                     </div>
                     {activeDate && (
-                      <div className="space-y-3">
+                      <div className="space-y-3 bg-neutral-50 p-4 rounded-xl border border-neutral-100">
                         <h4 className="text-sm font-medium text-neutral-700">{format(activeDate, "MMM d, yyyy")}</h4>
-                        <div className="space-y-2 max-h-[250px] overflow-y-auto pr-2">
+                        
+                        {myAttendances.some(a => a.date === format(activeDate, "yyyy-MM-dd")) && (
+                           <div className="text-xs p-2 rounded bg-green-50 border border-green-100 flex items-center gap-2">
+                             <CheckCircle2 className="w-4 h-4 text-green-600" />
+                             <span className="font-medium text-green-800">Present on this day</span>
+                           </div>
+                        )}
+                        
+                        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
                           {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).map(p => (
-                            <div key={p.id} className="text-xs p-2 rounded bg-amber-50 border border-amber-100">
-                              <span className="font-semibold text-amber-800">{p.name}</span>
-                              <p className="text-amber-700 whitespace-pre-wrap mt-1">{p.description}</p>
+                            <div key={p.id} className="text-xs p-3 rounded-lg bg-amber-50 border border-amber-100">
+                              <span className="font-semibold text-amber-800 block mb-1">{p.name}</span>
+                              <p className="text-amber-700 whitespace-pre-wrap leading-relaxed">{p.description}</p>
                             </div>
                           ))}
                           {myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).map(j => (
-                            <div key={j.id} className="text-xs p-2 rounded bg-blue-50 border border-blue-100 flex items-start justify-between gap-2">
+                            <div key={j.id} className="text-xs p-3 rounded-lg bg-blue-50 border border-blue-100 flex items-start justify-between gap-2">
                               <div>
                                 <span className="font-semibold text-blue-800 block">{j.title}</span>
-                                <span className="uppercase text-[9px] px-1 py-0.5 rounded bg-blue-200 text-blue-700 inline-block mt-1">{j.status}</span>
+                                <span className="uppercase text-[9px] px-1.5 py-0.5 rounded bg-blue-200 text-blue-800 inline-block mt-1.5">{j.status}</span>
                               </div>
                               {j.status !== 'completed' && (
-                                <Button size="sm" variant="outline" className="h-6 text-[10px] px-2 whitespace-nowrap" onClick={() => handleMarkJobComplete(j.id)}>Done</Button>
+                                <Button size="sm" variant="outline" className="h-6 text-[10px] px-2 whitespace-nowrap bg-white" onClick={() => handleMarkJobComplete(j.id)}>Mark Done</Button>
                               )}
                             </div>
                           ))}
                           {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).length === 0 &&
-                           myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).length === 0 && (
-                            <div className="text-neutral-400 text-xs">No events or tasks.</div>
+                           myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).length === 0 && 
+                           !myAttendances.some(a => a.date === format(activeDate, "yyyy-MM-dd")) && (
+                            <div className="text-neutral-400 text-xs py-4 text-center border-2 border-dashed rounded-lg">No events or tasks on this date.</div>
                            )}
                         </div>
                       </div>
@@ -602,32 +613,9 @@ export default function MemberDashboard() {
                   </div>
                 </CardContent>
               </Card>
-  
-              {/* Attendance Calendar View */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-lg flex items-center justify-between">
-                    Attendance History
-                    <CheckCircle2 className="w-5 h-5 text-green-500" />
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex justify-center border rounded-lg p-2 overflow-x-auto w-fit mx-auto h-fit">
-                    <Calendar
-                      mode="single"
-                      modifiers={{
-                        present: (date) => myAttendances.some(a => a.date === format(date, "yyyy-MM-dd"))
-                      }}
-                      modifiersClassNames={{
-                        present: "bg-green-100 text-green-700 font-bold rounded-full"
-                      }}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
             </div>
 
-            <Card className="bg-amber-50 border-amber-200">
+            <Card className="bg-amber-50 border-amber-200 shadow-sm">
               <CardContent className="p-4 flex gap-3 text-sm text-amber-800">
                 <Info className="w-5 h-5 flex-shrink-0" />
                 <p>Photos are automatically organized into your personal Google Drive folder upon upload.</p>
